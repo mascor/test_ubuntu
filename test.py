@@ -1,6 +1,3 @@
-```python
-#!/usr/bin/env python3
-
 import subprocess
 import os
 import sys
@@ -8,6 +5,8 @@ import time
 import tempfile
 import shutil
 import re
+import json
+from datetime import datetime
 
 def run_cmd(cmd, check=True):
     try:
@@ -17,6 +16,7 @@ def run_cmd(cmd, check=True):
         return e.stdout.strip(), e.stderr.strip()
 
 def check_dependencies():
+    print("🔍 Controllo dipendenze...")
     required_cmds = ['sysbench', 'lscpu', 'free', 'df', 'uname', 'lsb_release']
     missing = []
     for cmd in required_cmds:
@@ -25,11 +25,13 @@ def check_dependencies():
             missing.append(cmd)
     
     if missing:
-        print(f"Comandi mancanti: {', '.join(missing)}")
+        print(f"❌ Comandi mancanti: {', '.join(missing)}")
         print("Installa con: sudo apt install sysbench lsb-release")
         sys.exit(1)
+    print("✅ Tutte le dipendenze sono installate")
 
 def get_system_info():
+    print("📋 Raccolta informazioni di sistema...")
     info = {}
     info['hostname'], _ = run_cmd("hostname")
     info['distro'], _ = run_cmd("lsb_release -ds")
@@ -58,6 +60,7 @@ def get_system_info():
             info['disk_free'] = parts[3]
             break
     
+    print("✅ Informazioni di sistema raccolte")
     return info
 
 def parse_sysbench_cpu(output):
@@ -77,17 +80,21 @@ def parse_sysbench_cpu(output):
     return total_time, events_per_sec
 
 def bench_cpu():
+    print("🚀 Inizio benchmark CPU...")
     results = {}
     
+    print("   ⏱️ Esecuzione test CPU single-thread...")
     stdout, _ = run_cmd("sysbench cpu run")
     total_time, events_per_sec = parse_sysbench_cpu(stdout)
     results['single'] = {'total_time': total_time, 'events_per_sec': events_per_sec}
     
     nproc, _ = run_cmd("nproc")
+    print(f"   ⏱️ Esecuzione test CPU multi-thread ({nproc} cores)...")
     stdout, _ = run_cmd(f"sysbench cpu --threads={nproc} run")
     total_time, events_per_sec = parse_sysbench_cpu(stdout)
     results['multi'] = {'total_time': total_time, 'events_per_sec': events_per_sec}
     
+    print("✅ Benchmark CPU completato")
     return results
 
 def parse_sysbench_memory(output):
@@ -107,16 +114,20 @@ def parse_sysbench_memory(output):
     return transferred, speed
 
 def bench_memory():
+    print("💾 Inizio benchmark Memoria...")
     results = {}
     
+    print("   ⏱️ Esecuzione test memoria (default settings)...")
     stdout, _ = run_cmd("sysbench memory run")
     transferred, speed = parse_sysbench_memory(stdout)
     results['default'] = {'transferred': transferred, 'speed': speed}
     
+    print("   ⏱️ Esecuzione test memoria (large 5GB blocks)...")
     stdout, _ = run_cmd("sysbench memory --memory-block-size=1M --memory-total-size=5G run")
     transferred, speed = parse_sysbench_memory(stdout)
     results['large'] = {'transferred': transferred, 'speed': speed}
     
+    print("✅ Benchmark Memoria completato")
     return results
 
 def parse_sysbench_fileio(output):
@@ -146,6 +157,7 @@ def parse_sysbench_fileio(output):
     return read_mib, write_mib, avg_latency, requests_per_sec
 
 def bench_io():
+    print("💽 Inizio benchmark Disco I/O...")
     tmpdir = tempfile.mkdtemp(prefix='sysbench_')
     old_cwd = os.getcwd()
     os.chdir(tmpdir)
@@ -153,16 +165,18 @@ def bench_io():
     results = {}
     
     try:
+        print("   📂 Preparazione file di test (5GB)...")
         run_cmd("sysbench fileio --file-total-size=5G --file-num=5 prepare")
         
         tests = [
-            ('seq_read', 'seqrd', '1M'),
-            ('seq_write', 'seqwr', '1M'),
-            ('rnd_read', 'rndrd', '4k'),
-            ('rnd_write', 'rndwr', '4k')
+            ('seq_read', 'seqrd', '1M', 'lettura sequenziale'),
+            ('seq_write', 'seqwr', '1M', 'scrittura sequenziale'),
+            ('rnd_read', 'rndrd', '4k', 'lettura randomica'),
+            ('rnd_write', 'rndwr', '4k', 'scrittura randomica')
         ]
         
-        for test_name, test_mode, block_size in tests:
+        for test_name, test_mode, block_size, description in tests:
+            print(f"   ⏱️ Esecuzione test {description} (block size {block_size})...")
             cmd = f"sysbench fileio --file-total-size=5G --file-num=5 --file-test-mode={test_mode} --file-block-size={block_size} run"
             stdout, _ = run_cmd(cmd)
             read_mib, write_mib, avg_latency, requests_per_sec = parse_sysbench_fileio(stdout)
@@ -174,14 +188,121 @@ def bench_io():
                 'requests': requests_per_sec
             }
         
+        print("   🧹 Pulizia file di test...")
         run_cmd("sysbench fileio --file-total-size=5G --file-num=5 cleanup")
     finally:
         os.chdir(old_cwd)
         shutil.rmtree(tmpdir, ignore_errors=True)
     
+    print("✅ Benchmark Disco I/O completato")
     return results
 
+def save_json_report(sys_info, cpu_results, mem_results, io_results, duration):
+    """Salva i risultati del benchmark in formato JSON per analisi LLM"""
+    
+    # Struttura dati completa per il JSON
+    benchmark_data = {
+        "benchmark_info": {
+            "timestamp": datetime.now().isoformat(),
+            "duration_seconds": round(duration, 2),
+            "tool_version": "sysbench_analyzer_v1.0",
+            "test_date": datetime.now().strftime("%Y-%m-%d"),
+            "test_time": datetime.now().strftime("%H:%M:%S")
+        },
+        "system_info": {
+            "hostname": sys_info.get('hostname', 'unknown'),
+            "os_distribution": sys_info.get('distro', 'unknown'),
+            "kernel_version": sys_info.get('kernel', 'unknown'),
+            "cpu_model": sys_info.get('cpu_model', 'unknown'),
+            "cpu_cores": int(sys_info.get('cores', 0)) if sys_info.get('cores', '0').isdigit() else 0,
+            "ram_total": sys_info.get('ram_total', 'unknown'),
+            "disk_total": sys_info.get('disk_total', 'unknown'),
+            "disk_free": sys_info.get('disk_free', 'unknown')
+        },
+        "cpu_benchmark": {
+            "single_thread": {
+                "total_time_seconds": float(cpu_results['single']['total_time'].replace('s', '')) if cpu_results['single']['total_time'] else 0,
+                "events_per_second": float(cpu_results['single']['events_per_sec']) if cpu_results['single']['events_per_sec'] else 0,
+                "raw_total_time": cpu_results['single']['total_time'],
+                "raw_events_per_sec": cpu_results['single']['events_per_sec']
+            },
+            "multi_thread": {
+                "total_time_seconds": float(cpu_results['multi']['total_time'].replace('s', '')) if cpu_results['multi']['total_time'] else 0,
+                "events_per_second": float(cpu_results['multi']['events_per_sec']) if cpu_results['multi']['events_per_sec'] else 0,
+                "raw_total_time": cpu_results['multi']['total_time'],
+                "raw_events_per_sec": cpu_results['multi']['events_per_sec'],
+                "threads_used": int(sys_info.get('cores', 0)) if sys_info.get('cores', '0').isdigit() else 0
+            }
+        },
+        "memory_benchmark": {
+            "default_test": {
+                "transferred": mem_results['default']['transferred'],
+                "speed_mib_per_sec": float(mem_results['default']['speed'].replace(' MiB/sec', '')) if mem_results['default']['speed'] and 'MiB/sec' in mem_results['default']['speed'] else 0,
+                "raw_speed": mem_results['default']['speed']
+            },
+            "large_test_5gb": {
+                "transferred": mem_results['large']['transferred'],
+                "speed_mib_per_sec": float(mem_results['large']['speed'].replace(' MiB/sec', '')) if mem_results['large']['speed'] and 'MiB/sec' in mem_results['large']['speed'] else 0,
+                "raw_speed": mem_results['large']['speed']
+            }
+        },
+        "io_benchmark": {
+            "sequential_read": {
+                "speed_mib_per_sec": float(io_results['seq_read']['read'].replace(' MiB/s', '')) if io_results['seq_read']['read'] and 'MiB/s' in io_results['seq_read']['read'] else 0,
+                "raw_speed": io_results['seq_read']['read'],
+                "latency_ms": float(io_results['seq_read']['latency'].replace(' ms', '')) if io_results['seq_read']['latency'] and 'ms' in io_results['seq_read']['latency'] else 0,
+                "requests_per_sec": float(io_results['seq_read']['requests']) if io_results['seq_read']['requests'] else 0,
+                "block_size": "1M"
+            },
+            "sequential_write": {
+                "speed_mib_per_sec": float(io_results['seq_write']['write'].replace(' MiB/s', '')) if io_results['seq_write']['write'] and 'MiB/s' in io_results['seq_write']['write'] else 0,
+                "raw_speed": io_results['seq_write']['write'],
+                "latency_ms": float(io_results['seq_write']['latency'].replace(' ms', '')) if io_results['seq_write']['latency'] and 'ms' in io_results['seq_write']['latency'] else 0,
+                "requests_per_sec": float(io_results['seq_write']['requests']) if io_results['seq_write']['requests'] else 0,
+                "block_size": "1M"
+            },
+            "random_read": {
+                "speed_mib_per_sec": float(io_results['rnd_read']['read'].replace(' MiB/s', '')) if io_results['rnd_read']['read'] and 'MiB/s' in io_results['rnd_read']['read'] else 0,
+                "raw_speed": io_results['rnd_read']['read'],
+                "latency_ms": float(io_results['rnd_read']['latency'].replace(' ms', '')) if io_results['rnd_read']['latency'] and 'ms' in io_results['rnd_read']['latency'] else 0,
+                "requests_per_sec": float(io_results['rnd_read']['requests']) if io_results['rnd_read']['requests'] else 0,
+                "block_size": "4k"
+            },
+            "random_write": {
+                "speed_mib_per_sec": float(io_results['rnd_write']['write'].replace(' MiB/s', '')) if io_results['rnd_write']['write'] and 'MiB/s' in io_results['rnd_write']['write'] else 0,
+                "raw_speed": io_results['rnd_write']['write'],
+                "latency_ms": float(io_results['rnd_write']['latency'].replace(' ms', '')) if io_results['rnd_write']['latency'] and 'ms' in io_results['rnd_write']['latency'] else 0,
+                "requests_per_sec": float(io_results['rnd_write']['requests']) if io_results['rnd_write']['requests'] else 0,
+                "block_size": "4k"
+            }
+        },
+        "performance_summary": {
+            "cpu_single_thread_score": float(cpu_results['single']['events_per_sec']) if cpu_results['single']['events_per_sec'] else 0,
+            "cpu_multi_thread_score": float(cpu_results['multi']['events_per_sec']) if cpu_results['multi']['events_per_sec'] else 0,
+            "memory_bandwidth_mib_sec": float(mem_results['large']['speed'].replace(' MiB/sec', '')) if mem_results['large']['speed'] and 'MiB/sec' in mem_results['large']['speed'] else 0,
+            "io_seq_read_mib_sec": float(io_results['seq_read']['read'].replace(' MiB/s', '')) if io_results['seq_read']['read'] and 'MiB/s' in io_results['seq_read']['read'] else 0,
+            "io_seq_write_mib_sec": float(io_results['seq_write']['write'].replace(' MiB/s', '')) if io_results['seq_write']['write'] and 'MiB/s' in io_results['seq_write']['write'] else 0,
+            "io_random_read_iops": float(io_results['rnd_read']['requests']) if io_results['rnd_read']['requests'] else 0,
+            "io_random_write_iops": float(io_results['rnd_write']['requests']) if io_results['rnd_write']['requests'] else 0
+        }
+    }
+    
+    # Nome file con timestamp
+    hostname = sys_info.get('hostname', 'unknown')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_filename = f"benchmark_{hostname}_{timestamp}.json"
+    
+    try:
+        with open(json_filename, 'w', encoding='utf-8') as f:
+            json.dump(benchmark_data, f, indent=2, ensure_ascii=False)
+        print(f"📄 Report JSON salvato: {json_filename}")
+        return json_filename
+    except Exception as e:
+        print(f"❌ Errore nel salvare il file JSON: {e}")
+        return None
+
 def main():
+    print("🏁 Avvio benchmark completo del sistema...")
     start_time = time.time()
     
     check_dependencies()
@@ -192,6 +313,7 @@ def main():
     io_results = bench_io()
     
     duration = time.time() - start_time
+    print("📊 Generazione report finale...")
     
     print("\n=== BENCHMARK HOST ===")
     print(f"Hostname: {sys_info['hostname']}")
@@ -218,8 +340,8 @@ def main():
     print(f"rnd read : {io_results['rnd_read']['read']}")
     print(f"rnd write: {io_results['rnd_write']['write']}")
     
-    print(f"\nDurata totale benchmark (s): {duration:.2f}")
+    print(f"\n⏰ Durata totale benchmark: {duration:.2f} secondi")
+    print("🎉 Benchmark completato con successo!")
 
 if __name__ == "__main__":
     main()
-```
