@@ -102,14 +102,17 @@ def parse_sysbench_memory(output):
     speed = None
     
     for line in output.split('\n'):
-        if 'transferred (' in line:
-            match = re.search(r'transferred \(([\d.]+\s*\w+)\)', line)
-            if match:
-                transferred = match.group(1)
-        elif 'MiB/sec' in line and 'transferred' in line:
-            match = re.search(r'([\d.]+)\s*MiB/sec', line)
-            if match:
-                speed = match.group(1) + ' MiB/sec'
+        # Cerca la linea come "98550.87 MiB transferred (9854.32 MiB/sec)"
+        if 'MiB transferred' in line and 'MiB/sec' in line:
+            # Estrae i dati trasferiti
+            match_transferred = re.search(r'([\d.]+)\s*MiB transferred', line)
+            if match_transferred:
+                transferred = match_transferred.group(1) + ' MiB'
+            
+            # Estrae la velocità
+            match_speed = re.search(r'\(([\d.]+)\s*MiB/sec\)', line)
+            if match_speed:
+                speed = match_speed.group(1) + ' MiB/sec'
     
     return transferred, speed
 
@@ -118,13 +121,17 @@ def bench_memory():
     results = {}
     
     print("   ⏱️ Esecuzione test memoria (default settings)...")
-    stdout, _ = run_cmd("sysbench memory run")
+    stdout, stderr = run_cmd("sysbench memory run")
     transferred, speed = parse_sysbench_memory(stdout)
+    if not transferred or not speed:
+        print(f"   ⚠️  Debug - output catturato: {stdout[:200]}...")
     results['default'] = {'transferred': transferred, 'speed': speed}
     
     print("   ⏱️ Esecuzione test memoria (large 5GB blocks)...")
-    stdout, _ = run_cmd("sysbench memory --memory-block-size=1M --memory-total-size=5G run")
+    stdout, stderr = run_cmd("sysbench memory --memory-block-size=1M --memory-total-size=5G run")
     transferred, speed = parse_sysbench_memory(stdout)
+    if not transferred or not speed:
+        print(f"   ⚠️  Debug - output catturato: {stdout[:200]}...")
     results['large'] = {'transferred': transferred, 'speed': speed}
     
     print("✅ Benchmark Memoria completato")
@@ -134,9 +141,13 @@ def parse_sysbench_fileio(output):
     read_mib = None
     write_mib = None
     avg_latency = None
-    requests_per_sec = None
+    reads_per_sec = None
+    writes_per_sec = None
     
     for line in output.split('\n'):
+        line = line.strip()
+        
+        # Parsing throughput
         if 'read, MiB/s:' in line:
             match = re.search(r'read, MiB/s:\s*([\d.]+)', line)
             if match:
@@ -145,14 +156,25 @@ def parse_sysbench_fileio(output):
             match = re.search(r'written, MiB/s:\s*([\d.]+)', line)
             if match:
                 write_mib = match.group(1) + ' MiB/s'
-        elif 'avg:' in line and 'ms' in line:
+        
+        # Parsing operations per second
+        elif 'reads/s:' in line:
+            match = re.search(r'reads/s:\s*([\d.]+)', line)
+            if match:
+                reads_per_sec = match.group(1)
+        elif 'writes/s:' in line:
+            match = re.search(r'writes/s:\s*([\d.]+)', line)
+            if match:
+                writes_per_sec = match.group(1)
+        
+        # Parsing latency
+        elif 'avg:' in line and any(word in line for word in ['ms', 'latency']):
             match = re.search(r'avg:\s*([\d.]+)', line)
             if match:
                 avg_latency = match.group(1) + ' ms'
-        elif 'reads/s:' in line or 'writes/s:' in line:
-            match = re.search(r's:\s*([\d.]+)', line)
-            if match:
-                requests_per_sec = match.group(1)
+    
+    # Determina quale valore IOPS usare basandosi sul tipo di test
+    requests_per_sec = reads_per_sec if reads_per_sec and float(reads_per_sec) > 0 else writes_per_sec
     
     return read_mib, write_mib, avg_latency, requests_per_sec
 
@@ -237,12 +259,12 @@ def save_json_report(sys_info, cpu_results, mem_results, io_results, duration):
         "memory_benchmark": {
             "default_test": {
                 "transferred": mem_results['default']['transferred'],
-                "speed_mib_per_sec": float(mem_results['default']['speed'].replace(' MiB/sec', '')) if mem_results['default']['speed'] and 'MiB/sec' in mem_results['default']['speed'] else 0,
+                "speed_mib_per_sec": float(mem_results['default']['speed'].replace(' MiB/sec', '')) if mem_results['default']['speed'] and 'MiB/sec' in str(mem_results['default']['speed']) else 0,
                 "raw_speed": mem_results['default']['speed']
             },
             "large_test_5gb": {
                 "transferred": mem_results['large']['transferred'],
-                "speed_mib_per_sec": float(mem_results['large']['speed'].replace(' MiB/sec', '')) if mem_results['large']['speed'] and 'MiB/sec' in mem_results['large']['speed'] else 0,
+                "speed_mib_per_sec": float(mem_results['large']['speed'].replace(' MiB/sec', '')) if mem_results['large']['speed'] and 'MiB/sec' in str(mem_results['large']['speed']) else 0,
                 "raw_speed": mem_results['large']['speed']
             }
         },
