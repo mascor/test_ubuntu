@@ -315,6 +315,9 @@ def main():
     duration = time.time() - start_time
     print("📊 Generazione report finale...")
     
+    # Salva il report JSON per analisi LLM
+    json_filename = save_json_report(sys_info, cpu_results, mem_results, io_results, duration)
+    
     print("\n=== BENCHMARK HOST ===")
     print(f"Hostname: {sys_info['hostname']}")
     print(f"Distro: {sys_info['distro']}")
@@ -342,6 +345,9 @@ def main():
     
     print(f"\n⏰ Durata totale benchmark: {duration:.2f} secondi")
     print("🎉 Benchmark completato con successo!")
+    
+    if json_filename:
+        print(f"\n📋 Per confronti LLM usa il file: {json_filename}")
 
 if __name__ == "__main__":
     main()
